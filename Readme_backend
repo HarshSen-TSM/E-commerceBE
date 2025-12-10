@@ -1,0 +1,293 @@
+Nice, this is a fun one 😄
+I’ll give you:
+
+1. **High-level backend architecture**
+2. **End-to-end flow with Razorpay**
+3. **Key API endpoints**
+4. **User scenarios / use cases** (that you can literally put in SRS or timesheet)
+
+---
+
+## 1️⃣ Core Backend Modules / Entities
+
+Think in terms of these main models:
+
+* **User**
+
+  * id, name, email, phone, password_hash
+  * role (USER / ADMIN)
+* **Address**
+
+  * user_id, full address, city, pincode, type (home/office)
+* **Product**
+
+  * id, name, description, price, stock, category, images
+* **Cart & CartItem**
+
+  * Cart: id, user_id
+  * CartItem: cart_id, product_id, quantity
+* **Order & OrderItem**
+
+  * Order: id, user_id, address_id, status, total_amount, razorpay_order_id
+  * OrderItem: order_id, product_id, quantity, price_at_time
+* **Payment**
+
+  * id, order_id, razorpay_payment_id, status (CREATED/PAID/FAILED/REFUNDED), method, paid_at
+* **Admin**
+
+  * can manage products, view orders, change status (PACKED / SHIPPED / DELIVERED)
+
+---
+
+## 2️⃣ Typical Flow (User → Razorpay → Backend)
+
+### 🧍‍♂️ User Journey (happy path: successful payment)
+
+1. **User browses products**
+
+   * GET `/products`, GET `/products/:id`
+
+2. **Adds to cart**
+
+   * POST `/cart/items` (product_id, quantity)
+   * GET `/cart` to see final items
+
+3. **Proceeds to checkout**
+
+   * Frontend calls GET `/checkout` to:
+
+     * Validate cart & stock
+     * Calculate `total_amount`
+     * Get default address or ask user to add one
+
+4. **Backend creates Razorpay Order**
+
+   * API: POST `/payments/create-order`
+   * Steps:
+
+     * Verify stock again
+     * Create `Order` record with status = `PENDING_PAYMENT`
+     * Call Razorpay API from backend:
+
+       * `amount` (in paise)
+       * `currency`
+       * `receipt` (order_id)
+     * Save `razorpay_order_id` in Order table
+     * Return to frontend:
+
+       * `razorpay_key_id` (public)
+       * `razorpay_order_id`
+       * `amount`, `currency`, `order_id`
+
+5. **Frontend opens Razorpay Checkout**
+
+   * Uses the returned `razorpay_order_id` + `key_id`
+   * User selects UPI / Card / Netbanking etc.
+
+6. **Razorpay returns payment result TO FRONTEND**
+
+   * On success, frontend receives:
+
+     * `razorpay_payment_id`
+     * `razorpay_order_id`
+     * `razorpay_signature`
+
+7. **Frontend calls backend to verify**
+
+   * POST `/payments/verify`
+   * Body:
+
+     * your internal `order_id`
+     * `razorpay_order_id`
+     * `razorpay_payment_id`
+     * `razorpay_signature`
+
+8. **Backend verifies signature**
+
+   * Generate HMAC using your Razorpay secret:
+
+     * `hmac_sha256(order_id + "|" + razorpay_payment_id, RAZORPAY_SECRET)`
+   * Compare with `razorpay_signature`
+   * If VALID:
+
+     * Update Payment:
+
+       * status = `PAID`
+     * Update Order:
+
+       * status = `CONFIRMED`
+     * Reduce stock from products
+     * Clear user cart
+   * If INVALID:
+
+     * mark Payment as `FAILED`
+     * Order stays `PENDING_PAYMENT` or `FAILED`
+
+9. **Razorpay Webhook (recommended)**
+
+   * Razorpay sends server → server webhook: `/webhooks/razorpay`
+
+     * e.g. `payment.captured`, `payment.failed`
+   * Backend:
+
+     * Verifies webhook signature
+     * Ensures Payment & Order states are consistent
+
+10. **Order lifecycle**
+
+* Admin updates:
+
+  * `CONFIRMED` → `PACKED` → `SHIPPED` → `DELIVERED`
+* User can view order history: GET `/orders`
+
+---
+
+## 3️⃣ Important API Endpoints (Example Design)
+
+### 🔐 Auth
+
+* `POST /auth/register`
+* `POST /auth/login` → returns JWT
+* Middleware checks JWT and attaches `user_id` to request
+
+---
+
+### 🛒 Products
+
+* `GET /products`
+* `GET /products/:id`
+* (Admin) `POST /products`
+* (Admin) `PUT /products/:id`
+* (Admin) `DELETE /products/:id`
+
+---
+
+### 🧺 Cart
+
+* `GET /cart` → list items
+* `POST /cart/items` → { product_id, quantity }
+* `PUT /cart/items/:item_id` → update quantity
+* `DELETE /cart/items/:item_id` → remove one item
+* `DELETE /cart` → clear cart
+
+---
+
+### 📦 Checkout & Orders
+
+* `POST /checkout`
+
+  * Validates cart, address
+  * Returns a summary (items + total amount)
+* `POST /orders/create`
+
+  * Creates an internal `Order` with status `PENDING_PAYMENT`
+  * Calls Razorpay to create order
+  * Returns `{ order_id, razorpay_order_id, amount, key_id }`
+* `GET /orders`
+* `GET /orders/:id`
+
+(Admin)
+
+* `GET /admin/orders`
+* `PATCH /admin/orders/:id/status` → change status
+
+---
+
+### 💳 Payments (Razorpay)
+
+* `POST /payments/create-order`
+
+  * Can be merged with `/orders/create`
+* `POST /payments/verify`
+
+  * Verifies signature
+  * Updates `Order` and `Payment` table
+* `POST /webhooks/razorpay`
+
+  * For Razorpay webhook events
+  * Secured with Razorpay webhook secret
+
+---
+
+## 4️⃣ Key User Scenarios (You can reuse in docs/timesheet)
+
+Here are some concrete scenarios you can write as “user flows”:
+
+### 1. New user purchase (successful payment)
+
+1. User registers & logs in.
+2. Browses products and adds items to cart.
+3. Goes to checkout, selects saved address.
+4. Backend creates Razorpay order; frontend opens checkout.
+5. Payment success → backend verifies → order confirmed.
+6. User sees order in “My Orders” as `CONFIRMED`.
+
+---
+
+### 2. Payment failed / user closes Razorpay popup
+
+1. User starts payment.
+2. Closes the payment window or payment fails.
+3. Frontend notifies backend, or Razorpay webhook says `payment.failed`.
+4. Backend marks Payment as `FAILED`, Order status = `PENDING_PAYMENT` or `FAILED`.
+5. User can click “Retry Payment”:
+
+   * Either:
+
+     * reuse the same internal order and create a **new Razorpay order**, OR
+     * create a fresh Order (depending on your design).
+
+---
+
+### 3. UPI pending → captured via webhook
+
+1. User pays via UPI but status is pending.
+2. Razorpay later captures the payment.
+3. Webhook `/webhooks/razorpay` is called with `payment.captured`.
+4. Backend:
+
+   * finds the order via `razorpay_order_id`
+   * marks Payment as `PAID`, Order as `CONFIRMED`.
+5. User refreshes “My Orders” and sees updated status.
+
+---
+
+### 4. Admin managing orders
+
+1. Admin logs in (ROLE = ADMIN).
+2. Views all orders: `GET /admin/orders`.
+3. For a paid order:
+
+   * Updates `status = PACKED`, then `SHIPPED`, then `DELIVERED`.
+4. User sees real-time status updates in their Order details.
+
+---
+
+### 5. Refund / Cancellation (basic flow)
+
+1. User requests cancellation before shipping.
+2. Backend checks:
+
+   * If order is `PAID` and not yet `SHIPPED`:
+
+     * Call Razorpay Refund API.
+3. Save refund details in `Payment` table (status = `REFUNDED`).
+4. Order status = `CANCELLED`.
+
+---
+
+### 6. Guest user → login at checkout
+
+1. User browses as guest.
+2. At checkout, if no JWT:
+
+   * Redirect to login/register.
+3. After login, attach cart (either:
+
+   * stored by device/session, or
+   * empty, user starts adding again).
+4. Continue checkout normally.
+
+---
+
+If you tell me your tech stack (e.g. **FastAPI + PostgreSQL + JWT**, or **Node + Express + MongoDB**), I can turn this into an actual folder structure + sample controller/service code for the Razorpay flow.
