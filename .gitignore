@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+venv/
+
+# SQLite DB
+test.db
+
+# VS Code / IDE stuff (optional)
+.vscode/
+.idea/
