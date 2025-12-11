@@ -31,12 +31,15 @@ class CategoryRead(CategoryBase):
 
 # ---------- Product ----------
 
+VALID_PRODUCT_STATUSES = ["active", "inactive", "deleted"]
+
+
 class ProductBase(BaseModel):
     name: str
     description: Optional[str] = None
     price: float
     image_url: Optional[str] = None
-    status: str = "active"
+    status: str = Field("active", pattern=r"^(active|inactive|deleted)$")
     stock: int = 0
     category_id: Optional[int] = None
 
@@ -50,7 +53,7 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = None
     price: Optional[float] = None
     image_url: Optional[str] = None
-    status: Optional[str] = None
+    status: Optional[str] = Field(None, pattern=r"^(active|inactive|deleted)$")
     stock: Optional[int] = None
     category_id: Optional[int] = None
 

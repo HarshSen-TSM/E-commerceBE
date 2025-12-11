@@ -62,8 +62,16 @@ class CartService:
         cart = self._get_or_create_cart(user_id)
 
         product = self.repo.get_product(data.product_id)
-        if not product or product.status != "active":
-            raise HTTPException(status_code=400, detail="Product not available")
+        # More specific errors help clients and debugging:
+        if not product:
+            # product id does not exist in the DB
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+        if product.status != "active":
+            # product exists but isn't available for sale
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Product not active (status={product.status})",
+            )
 
 
         # basic stock check

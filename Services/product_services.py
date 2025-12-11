@@ -2,13 +2,25 @@
 
 from typing import List, Optional
 from sqlalchemy.orm import Session
+from fastapi import HTTPException, status
 
 from models.product_model import Product
-from schemas.product_schema import ProductCreate, ProductUpdate, ProductRead
+from schemas.product_schema import ProductCreate, ProductUpdate, ProductRead, VALID_PRODUCT_STATUSES
 from Repositories import product_repository
 
 
 class ProductService:
+    # Allowed product statuses
+    ALLOWED_STATUSES = {"active", "inactive", "deleted"}
+    
+    @staticmethod
+    def _validate_status(status_value: Optional[str]) -> None:
+        """Validate that status is one of the allowed values. Raises HTTPException if invalid."""
+        if status_value is not None and status_value not in ProductService.ALLOWED_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status '{status_value}'. Allowed values: {', '.join(sorted(ProductService.ALLOWED_STATUSES))}"
+            )
     def __init__(self, db: Session):
         self.db = db
 
@@ -43,10 +55,12 @@ class ProductService:
 
     # ----- Admin operations -----
     def create_product(self, product_in: ProductCreate) -> ProductRead:
+        self._validate_status(product_in.status)
         product = product_repository.create_product(self.db, product_in)
         return ProductRead.model_validate(product)
 
     def update_product(self, product_id: int, product_in: ProductUpdate) -> ProductRead:
+        self._validate_status(product_in.status)
         product = product_repository.get_product(self.db, product_id)
         if not product:
             from fastapi import HTTPException, status
