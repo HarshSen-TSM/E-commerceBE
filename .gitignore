@@ -8,6 +8,12 @@ venv/
 # SQLite DB
 test.db
 
-# VS Code / IDE stuff (optional)
+# VS Code / IDE stuff
 .vscode/
 .idea/
+
+# Environment variables
+.env
+
+# Documentation / Markdown files
+*.md

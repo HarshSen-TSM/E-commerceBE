@@ -46,6 +46,7 @@ class Order(Base):
         back_populates="order",
         cascade="all, delete-orphan",
     )
+    payments = relationship("Payment", back_populates="order")
 
 
 class OrderItem(Base):
