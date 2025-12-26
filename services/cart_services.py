@@ -1,11 +1,9 @@
 # Services/cart_services.py
 
-from typing import Optional
-
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 
-from Repositories.cart_repository import CartRepository
+from repositories.cart_repository import CartRepository
 from schemas.cart_schema import (
     CartItemCreate,
     CartItemUpdate,
@@ -14,10 +12,11 @@ from schemas.cart_schema import (
     CartSummary,
 )
 from models.cart_model import Cart
+from utils.logger import logger
 
 
 class CartService:
-    TAX_RATE = 0.0    # change if you want
+    TAX_RATE = 0.0
     DISCOUNT_RATE = 0.0
 
     def __init__(self, db: Session):
@@ -54,71 +53,84 @@ class CartService:
             summary=summary,
         )
 
+    # ---------- GET CART ----------
     def get_cart_for_user(self, user_id: int) -> CartRead:
         cart = self._get_or_create_cart(user_id)
         return self._build_cart_response(cart)
 
+    # ---------- ADD ITEM ----------
     def add_item(self, user_id: int, data: CartItemCreate) -> CartRead:
         cart = self._get_or_create_cart(user_id)
 
         product = self.repo.get_product(data.product_id)
-        # More specific errors help clients and debugging:
         if not product:
-            # product id does not exist in the DB
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+            logger.warning(f"Product not found: product_id={data.product_id}")
+            raise HTTPException(status_code=404, detail="Product not found")
+
         if product.status != "active":
-            # product exists but isn't available for sale
+            logger.warning(f"Inactive product: product_id={data.product_id}")
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=400,
                 detail=f"Product not active (status={product.status})",
             )
 
-
-        # basic stock check
         if product.stock is not None and data.quantity > product.stock:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Not enough stock",
-            )
+            logger.warning(f"Insufficient stock: product_id={data.product_id}")
+            raise HTTPException(status_code=400, detail="Not enough stock")
 
         self.repo.add_item(cart, product, data.quantity)
-        # (you could also reduce stock here if you want)
+
+        logger.info(
+            f"Item added to cart: product_id={data.product_id}, quantity={data.quantity}"
+        )
+
         return self._build_cart_response(cart)
 
+    # ---------- UPDATE ITEM ----------
     def update_item_quantity(
         self, user_id: int, item_id: int, data: CartItemUpdate
     ) -> CartRead:
         cart = self._get_or_create_cart(user_id)
         item = self.repo.get_item_by_id(item_id, cart.id)
+
         if not item:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cart item not found",
-            )
+            logger.warning(f"Cart item not found: item_id={item_id}")
+            raise HTTPException(status_code=404, detail="Cart item not found")
 
         product = item.product
         if product.stock is not None and data.quantity > product.stock:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Not enough stock",
-            )
+            logger.warning(f"Insufficient stock: product_id={product.id}")
+            raise HTTPException(status_code=400, detail="Not enough stock")
 
         self.repo.update_item_quantity(item, data.quantity)
+
+        logger.info(
+            f"Cart item quantity updated: item_id={item_id}, quantity={data.quantity}"
+        )
+
         return self._build_cart_response(cart)
 
+    # ---------- REMOVE ITEM ----------
     def remove_item(self, user_id: int, item_id: int) -> CartRead:
         cart = self._get_or_create_cart(user_id)
         item = self.repo.get_item_by_id(item_id, cart.id)
+
         if not item:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Cart item not found",
-            )
+            logger.warning(f"Cart item not found for removal: item_id={item_id}")
+            raise HTTPException(status_code=404, detail="Cart item not found")
+
         self.repo.remove_item(item)
+
+        logger.info(f"Cart item removed: item_id={item_id}")
+
         return self._build_cart_response(cart)
 
+    # ---------- CLEAR CART ----------
     def clear_cart(self, user_id: int) -> CartRead:
         cart = self._get_or_create_cart(user_id)
         self.repo.clear_cart(cart)
+
+        logger.info("Cart cleared")
+
         self.db.refresh(cart)
         return self._build_cart_response(cart)

@@ -6,7 +6,7 @@ from fastapi import HTTPException, status
 
 from models.product_model import Product
 from schemas.product_schema import ProductCreate, ProductUpdate, ProductRead, VALID_PRODUCT_STATUSES
-from Repositories import product_repository
+from repositories import product_repository
 
 
 class ProductService:

@@ -4,9 +4,9 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 
-from Repositories.user_repository import UserRepository
+from repositories.user_repository import UserRepository
 from schemas.user_schema import UserCreate, UserRead, UserLogin
-from Utils.jwt_utils import hash_password, verify_password, create_access_token
+from utils.jwt_utils import hash_password, verify_password, create_access_token
 
 
 class UserService:

@@ -6,9 +6,9 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from Utils.razorpay_client import razorpay_client
-from Utils.payment_config import RAZORPAY_KEY_ID
-from Utils.logger import logger
+from utils.razorpay_client import razorpay_client
+from utils.payment_config import RAZORPAY_KEY_ID
+from utils.logger import logger
 from models.order_model import Order
 from models.payment_model import Payment
 from schemas.payment_schema import (
@@ -131,6 +131,7 @@ class PaymentService:
             except Exception:
                 payment.status = "FAILED"
                 db.commit()
+                logger.error(f"Payment signature verification failed, order {data.order_id}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Signature verification failed",
@@ -140,6 +141,7 @@ class PaymentService:
             payment.razorpay_payment_id = data.razorpay_payment_id
             payment.razorpay_signature = data.razorpay_signature
             payment.status = "SUCCESS"
+            logger.info(f"Payment marked as SUCCESS, order {data.order_id}")
 
             # update order status too
             order = db.query(Order).filter(Order.id == payment.order_id).first()
@@ -148,6 +150,7 @@ class PaymentService:
                 if hasattr(order, "payment_status"):
                     order.payment_status = "PAID"
                 order.status = "PAID"
+                logger.info(f"Order marked as PAID, order {data.order_id}")
 
             db.commit()
             db.refresh(payment)

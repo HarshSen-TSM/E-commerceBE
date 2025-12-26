@@ -3,15 +3,16 @@
 from fastapi import APIRouter, Depends, status
 from fastapi.security import OAuth2PasswordBearer
 
-from Services.payment_services import PaymentService
+from services.payment_services import PaymentService
 from schemas.payment_schema import (
     PaymentSessionCreate,
     PaymentSessionResponse,
     PaymentVerifyRequest,
     PaymentRead,
 )
-from Utils.jwt_utils import decode_access_token  # or your security.py
+from utils.jwt_utils import decode_access_token  # or your security.py
 from schemas.user_schema import TokenData
+from utils.response_helper import success_response
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -32,25 +33,26 @@ def get_current_user_id(token: str = Depends(oauth2_scheme)) -> int:
     return token_data.user_id
 
 
-@router.post(
-    "/create-session",
-    response_model=PaymentSessionResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("/create-session", status_code=status.HTTP_201_CREATED)
 def create_payment_session(
     payload: PaymentSessionCreate,
     current_user_id: int = Depends(get_current_user_id),
 ):
-    return service.create_payment_session(current_user_id, payload)
+    session = service.create_payment_session(current_user_id, payload)
+    return success_response(
+        message="Payment session created successfully",
+        data=session.model_dump(),
+        status_code=201
+    )
 
 
-@router.post(
-    "/verify",
-    response_model=PaymentRead,
-    status_code=status.HTTP_200_OK,
-)
+@router.post("/verify", status_code=status.HTTP_200_OK)
 def verify_payment(
     payload: PaymentVerifyRequest,
     current_user_id: int = Depends(get_current_user_id),
 ):
-    return service.verify_and_capture_payment(current_user_id, payload)
+    payment = service.verify_and_capture_payment(current_user_id, payload)
+    return success_response(
+        message="Payment verified successfully",
+        data=PaymentRead.model_validate(payment).model_dump()
+    )

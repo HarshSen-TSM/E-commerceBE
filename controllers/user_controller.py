@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from schemas.user_schema import UserCreate, UserRead, UserLogin, Token
-from Services.user_services import UserService
-from Utils.jwt_utils import decode_access_token
+from services.user_services import UserService
+from utils.jwt_utils import decode_access_token
+from utils.response_helper import success_response
+from utils.request_context import get_current_user ,set_current_user
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -37,37 +39,52 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-
+    set_current_user(user) 
     return UserRead.from_orm(user)
 
 
-@router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+@router.post("/register", status_code=status.HTTP_201_CREATED)
 def register_user(
     user_in: UserCreate,
     service: UserService = Depends(get_user_service),
 ):
-    return service.register_user(user_in)
+    user = service.register_user(user_in)
+    return success_response(
+        message="User registered successfully",
+        data=user.model_dump(),
+        status_code=201
+    )
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login")
 def login(
     login_data: UserLogin,
     service: UserService = Depends(get_user_service),
 ):
-    access_token = service.login(login_data)
-    return Token(access_token=access_token, token_type="bearer")
+    token = service.login(login_data)
+    return success_response(
+        message="Login successful",
+        data=token
+    )
 
 
-@router.get("/me", response_model=UserRead)
+@router.get("/me")
 def read_me(current_user: UserRead = Depends(get_current_user)):
-    return current_user
+    return success_response(
+        message="Current user profile retrieved successfully",
+        data=current_user.model_dump()
+    )
 
 
-@router.get("/", response_model=list[UserRead])
+@router.get("/")
 def list_users(
     skip: int = 0,
     limit: int = 100,
     service: UserService = Depends(get_user_service),
     current_user: UserRead = Depends(get_current_user),  # protect if you want
 ):
-    return service.list_users(skip=skip, limit=limit)
+    users = service.list_users(skip=skip, limit=limit)
+    return success_response(
+        message="Users retrieved successfully",
+        data=[user.model_dump() for user in users]
+    )
