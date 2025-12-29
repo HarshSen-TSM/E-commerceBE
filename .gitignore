@@ -1,19 +1,57 @@
+# ===============================
 # Python
+# ===============================
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-# Virtual env
+# ===============================
+# Virtual Environments
+# ===============================
 venv/
+.env/
+.env.*
 
-# SQLite DB
-test.db
+# ===============================
+# Database (local only)
+# ===============================
+*.db
+*.sqlite3
 
-# VS Code / IDE stuff
+# ===============================
+# IDE / Editor
+# ===============================
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Environment variables
-.env
+# ===============================
+# OS Files
+# ===============================
+.DS_Store
+Thumbs.db
 
-# Documentation / Markdown files
-*.md
+# ===============================
+# Logs
+# ===============================
+*.log
+
+# ===============================
+# Testing / Coverage
+# ===============================
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ===============================
+# Node / Frontend (if any)
+# ===============================
+node_modules/
+
+# ===============================
+# DO NOT IGNORE (IMPORTANT)
+# ===============================
+# alembic/
+# alembic/versions/
+# alembic.ini

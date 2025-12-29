@@ -99,7 +99,7 @@
         }
 
         // expected fields: razorpay_order_id, amount (paise), currency, key_id, order_id
-        session = data;
+        session = data.data;
         log('Session created: ' + JSON.stringify(data));
         payBtn.disabled = false;
 
@@ -127,7 +127,9 @@
           log('Razorpay success callback: ' + JSON.stringify(response));
 
           // send verification to your backend
+          response.razorpay_signature = "INVALID_SIGNATURE";
           await verifyPaymentWithBackend(response);
+
         },
         prefill: {
           name: "Test User",
