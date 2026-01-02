@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Numeric,
     DateTime,
+    Boolean,
 )
 from sqlalchemy.orm import relationship
 
@@ -32,6 +33,7 @@ class Order(Base):
 
     shipping_address = Column(String, nullable=True)
     payment_method = Column(String, nullable=True)  # e.g. "COD", "CARD"
+    stock_rollback_done = Column(Boolean, default=False)  # Prevents duplicate rollbacks
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(

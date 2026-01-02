@@ -13,6 +13,8 @@ from schemas.cart_schema import (
 )
 from models.cart_model import Cart
 from utils.logger import logger
+from utils.caching_utils import get_or_set_cache
+from utils.redis_client import redis_client
 
 
 class CartService:
@@ -53,12 +55,27 @@ class CartService:
             summary=summary,
         )
 
-    # ---------- GET CART ----------
+    # ------------------------------------------------------------------
+    # GET CART (CACHED — SHORT TTL)
+    # ------------------------------------------------------------------
     def get_cart_for_user(self, user_id: int) -> CartRead:
-        cart = self._get_or_create_cart(user_id)
-        return self._build_cart_response(cart)
+        cache_key = f"cart:{user_id}"
 
-    # ---------- ADD ITEM ----------
+        def fetch_from_db():
+            cart = self._get_or_create_cart(user_id)
+            return self._build_cart_response(cart).model_dump()
+
+        data = get_or_set_cache(
+            key=cache_key,
+            ttl=60,  # 🔴 SHORT TTL (1 minute)
+            fetch_fn=fetch_from_db,
+        )
+
+        return CartRead.model_validate(data)
+
+    # ------------------------------------------------------------------
+    # ADD ITEM (INVALIDATE CACHE)
+    # ------------------------------------------------------------------
     def add_item(self, user_id: int, data: CartItemCreate) -> CartRead:
         cart = self._get_or_create_cart(user_id)
 
@@ -68,25 +85,24 @@ class CartService:
             raise HTTPException(status_code=404, detail="Product not found")
 
         if product.status != "active":
-            logger.warning(f"Inactive product: product_id={data.product_id}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Product not active (status={product.status})",
             )
 
         if product.stock is not None and data.quantity > product.stock:
-            logger.warning(f"Insufficient stock: product_id={data.product_id}")
             raise HTTPException(status_code=400, detail="Not enough stock")
 
         self.repo.add_item(cart, product, data.quantity)
 
-        logger.info(
-            f"Item added to cart: product_id={data.product_id}, quantity={data.quantity}"
-        )
+        # 🔴 INVALIDATE CACHE
+        redis_client.delete(f"cart:{user_id}")
 
         return self._build_cart_response(cart)
 
-    # ---------- UPDATE ITEM ----------
+    # ------------------------------------------------------------------
+    # UPDATE ITEM (INVALIDATE CACHE)
+    # ------------------------------------------------------------------
     def update_item_quantity(
         self, user_id: int, item_id: int, data: CartItemUpdate
     ) -> CartRead:
@@ -94,43 +110,45 @@ class CartService:
         item = self.repo.get_item_by_id(item_id, cart.id)
 
         if not item:
-            logger.warning(f"Cart item not found: item_id={item_id}")
             raise HTTPException(status_code=404, detail="Cart item not found")
 
         product = item.product
         if product.stock is not None and data.quantity > product.stock:
-            logger.warning(f"Insufficient stock: product_id={product.id}")
             raise HTTPException(status_code=400, detail="Not enough stock")
 
         self.repo.update_item_quantity(item, data.quantity)
 
-        logger.info(
-            f"Cart item quantity updated: item_id={item_id}, quantity={data.quantity}"
-        )
+        # 🔴 INVALIDATE CACHE
+        redis_client.delete(f"cart:{user_id}")
 
         return self._build_cart_response(cart)
 
-    # ---------- REMOVE ITEM ----------
+    # ------------------------------------------------------------------
+    # REMOVE ITEM (INVALIDATE CACHE)
+    # ------------------------------------------------------------------
     def remove_item(self, user_id: int, item_id: int) -> CartRead:
         cart = self._get_or_create_cart(user_id)
         item = self.repo.get_item_by_id(item_id, cart.id)
 
         if not item:
-            logger.warning(f"Cart item not found for removal: item_id={item_id}")
             raise HTTPException(status_code=404, detail="Cart item not found")
 
         self.repo.remove_item(item)
 
-        logger.info(f"Cart item removed: item_id={item_id}")
+        # 🔴 INVALIDATE CACHE
+        redis_client.delete(f"cart:{user_id}")
 
         return self._build_cart_response(cart)
 
-    # ---------- CLEAR CART ----------
+    # ------------------------------------------------------------------
+    # CLEAR CART (INVALIDATE CACHE)
+    # ------------------------------------------------------------------
     def clear_cart(self, user_id: int) -> CartRead:
         cart = self._get_or_create_cart(user_id)
         self.repo.clear_cart(cart)
 
-        logger.info("Cart cleared")
+        # 🔴 INVALIDATE CACHE
+        redis_client.delete(f"cart:{user_id}")
 
         self.db.refresh(cart)
         return self._build_cart_response(cart)

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 
 from repositories.user_repository import UserRepository
-from schemas.user_schema import UserCreate, UserRead, UserLogin
+from schemas.user_schema import UserCreate, UserRead, UserLogin, Token
 from utils.jwt_utils import hash_password, verify_password, create_access_token
 
 
@@ -34,7 +34,7 @@ class UserService:
             return None
         return user
 
-    def login(self, login_data: UserLogin) -> str:
+    def login(self, login_data: UserLogin) -> Token:
         user = self.authenticate_user(login_data)
         if not user:
             raise HTTPException(
@@ -42,10 +42,10 @@ class UserService:
                 detail="Incorrect email or password",
             )
 
-        token = create_access_token(
+        access_token = create_access_token(
             data={"sub": user.email, "sub_id": user.id, "role": user.role}
         )
-        return token
+        return Token(access_token=access_token, token_type="bearer")
 
     def get_user(self, user_id: int) -> Optional[UserRead]:
         user = self.repo.get_by_id(user_id)

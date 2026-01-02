@@ -1,5 +1,6 @@
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
@@ -9,15 +10,17 @@ from models.cart_model import Cart
 from models.product_model import Product
 from models.inventory_model import Inventory
 from utils.logger import logger
+from utils.caching_utils import get_or_set_cache
+from utils.redis_client import redis_client
 
 
 ALLOWED_STATUSES = {
     "PENDING",
-    "CONFIRMED",
     "PAID",
     "SHIPPED",
     "DELIVERED",
     "CANCELLED",
+    "EXPIRED",
 }
 
 
@@ -29,7 +32,33 @@ class OrderService:
     def __init__(self, db: Session):
         self.db = db
 
-    # ---------- CREATE ORDER FROM CART ----------
+    # ------------------------------------------------------------------
+    # INTERNAL: ROLLBACK INVENTORY FOR ORDER
+    # ------------------------------------------------------------------
+    def _rollback_inventory(self, order: Order) -> None:
+        if order.status not in {"PENDING", "CANCELLED", "EXPIRED"}:
+            return
+
+        for item in order.items:
+            inventory = (
+                self.db.query(Inventory)
+                .filter(Inventory.product_id == item.product_id)
+                .with_for_update()
+                .first()
+            )
+
+            if inventory:
+                inventory.available_stock += item.quantity
+                inventory.reserved_stock -= item.quantity
+
+                logger.info(
+                    f"Inventory rolled back: product_id={item.product_id}, "
+                    f"quantity={item.quantity}"
+                )
+
+    # ------------------------------------------------------------------
+    # CREATE ORDER FROM CART (RESERVES INVENTORY)
+    # ------------------------------------------------------------------
     def create_order_from_cart(
         self,
         user_id: int,
@@ -45,13 +74,10 @@ class OrderService:
         )
 
         if not cart:
-            logger.warning("Cart not found or empty")
             raise HTTPException(400, "Cart not found or empty")
 
-        valid_items = [item for item in cart.items if item.quantity and item.quantity > 0]
-
+        valid_items = [i for i in cart.items if i.quantity and i.quantity > 0]
         if not valid_items:
-            logger.warning("Cart has no valid items")
             raise HTTPException(400, "Cart is empty or has no valid items")
 
         order = Order(
@@ -59,13 +85,13 @@ class OrderService:
             shipping_address=shipping_address,
             payment_method=payment_method,
             status="PENDING",
+            created_at=datetime.utcnow(),
         )
         self.db.add(order)
         self.db.flush()
 
         subtotal = Decimal("0.00")
         total_items = 0
-        discount = Decimal("0.00")
 
         for cart_item in valid_items:
             product = (
@@ -75,7 +101,6 @@ class OrderService:
             )
 
             if not product:
-                logger.warning(f"Product not available: product_id={cart_item.product_id}")
                 raise HTTPException(400, "Product not available")
 
             inventory = (
@@ -85,19 +110,11 @@ class OrderService:
                 .first()
             )
 
-            if not inventory:
-                logger.error(f"Inventory missing for product_id={product.id}")
-                raise HTTPException(400, "Inventory not found")
-
             if inventory.available_stock < cart_item.quantity:
-                logger.warning(f"Insufficient stock: product_id={product.id}")
                 raise HTTPException(400, "Insufficient stock")
 
             inventory.available_stock -= cart_item.quantity
             inventory.reserved_stock += cart_item.quantity
-            logger.info(
-                f"Inventory reserved: product_id={product.id}, quantity={cart_item.quantity}"
-            )
 
             unit_price = _quantize_money(Decimal(str(product.price)))
             line_total = _quantize_money(unit_price * Decimal(cart_item.quantity))
@@ -116,41 +133,53 @@ class OrderService:
                 )
             )
 
-        tax = _quantize_money(subtotal * Decimal("0.18"))
-        grand_total = _quantize_money(subtotal + tax - discount)
-
         order.total_items = total_items
-        order.subtotal = _quantize_money(subtotal)
-        order.tax = tax
-        order.discount = _quantize_money(discount)
-        order.grand_total = grand_total
+        order.subtotal = subtotal
+        order.tax = _quantize_money(subtotal * Decimal("0.18"))
+        order.discount = Decimal("0.00")
+        order.grand_total = _quantize_money(order.subtotal + order.tax)
 
         for item in valid_items:
             self.db.delete(item)
 
         self.db.commit()
-        logger.info(f"Order created successfully: order_id={order.id}")
         self.db.refresh(order)
 
-        return (
-            self.db.query(Order)
-            .options(joinedload(Order.items))
-            .filter(Order.id == order.id)
-            .first()
-        )
+        # 🔴 INVALIDATE ORDER LIST CACHE
+        redis_client.delete(f"user_orders:{user_id}")
 
-    # ---------- LIST USER ORDERS ----------
+        return order
+
+    # ------------------------------------------------------------------
+    # LIST USER ORDERS (CACHED)
+    # ------------------------------------------------------------------
     def list_user_orders(self, user_id: int) -> List[Order]:
-        return (
-            self.db.query(Order)
-            .options(joinedload(Order.items))
-            .filter(Order.user_id == user_id)
-            .order_by(Order.created_at.desc())
-            .all()
+        cache_key = f"user_orders:{user_id}"
+
+        def fetch_from_db():
+            orders = (
+                self.db.query(Order)
+                .options(joinedload(Order.items))
+                .filter(Order.user_id == user_id)
+                .order_by(Order.created_at.desc())
+                .all()
+            )
+            return [order.to_dict() for order in orders]
+
+        data = get_or_set_cache(
+            key=cache_key,
+            ttl=180,  # 🔴 SHORT TTL
+            fetch_fn=fetch_from_db,
         )
 
-    # ---------- GET SINGLE ORDER ----------
-    def get_order_for_user(self, order_id: int, user_id: int) -> Order:
+        return [
+            Order(**order_dict) for order_dict in data
+        ]
+
+    # ------------------------------------------------------------------
+    # UPDATE ORDER STATUS (ROLLBACK + INVALIDATE CACHE)
+    # ------------------------------------------------------------------
+    def update_status(self, order_id: int, new_status: str) -> Order:
         order = (
             self.db.query(Order)
             .options(joinedload(Order.items))
@@ -159,35 +188,23 @@ class OrderService:
         )
 
         if not order:
-            logger.warning(f"Order not found: order_id={order_id}")
             raise HTTPException(404, "Order not found")
 
-        if order.user_id != user_id:
-            logger.warning(f"Unauthorized access attempt: order_id={order_id}")
-            raise HTTPException(403, "Not authorized to access this order")
-
-        return order
-
-    # ---------- UPDATE ORDER STATUS ----------
-    def update_status(self, order_id: int, new_status: str) -> Order:
-        if new_status not in ALLOWED_STATUSES:
-            logger.warning(f"Invalid order status: {new_status}")
-            raise HTTPException(400, f"Invalid order status '{new_status}'")
-
-        order = self.db.query(Order).filter(Order.id == order_id).first()
-
-        if not order:
-            logger.warning(f"Order not found for status update: order_id={order_id}")
-            raise HTTPException(404, "Order not found")
+        if new_status in {"CANCELLED", "EXPIRED"}:
+            self._rollback_inventory(order)
 
         order.status = new_status
         self.db.commit()
         self.db.refresh(order)
 
-        logger.info(f"Order status updated: order_id={order_id}, status={new_status}")
+        # 🔴 INVALIDATE ORDER LIST CACHE
+        redis_client.delete(f"user_orders:{order.user_id}")
+
         return order
 
-    # ---------- ATTACH PAYMENT ----------
+    # ------------------------------------------------------------------
+    # ATTACH PAYMENT (FINALIZE / ROLLBACK + INVALIDATE CACHE)
+    # ------------------------------------------------------------------
     def attach_payment(
         self,
         order_id: int,
@@ -197,10 +214,14 @@ class OrderService:
         payment_status: str,
     ) -> Order:
 
-        order = self.db.query(Order).filter(Order.id == order_id).first()
+        order = (
+            self.db.query(Order)
+            .options(joinedload(Order.items))
+            .filter(Order.id == order_id)
+            .first()
+        )
 
         if not order:
-            logger.warning(f"Order not found for payment: order_id={order_id}")
             raise HTTPException(404, "Order not found")
 
         order.transaction_id = transaction_id
@@ -210,8 +231,14 @@ class OrderService:
 
         if payment_status.upper() == "PAID":
             order.status = "PAID"
-            logger.info(f"Order marked as PAID: order_id={order_id}")
+        else:
+            self._rollback_inventory(order)
+            order.status = "CANCELLED"
 
         self.db.commit()
         self.db.refresh(order)
+
+        # 🔴 INVALIDATE ORDER LIST CACHE
+        redis_client.delete(f"user_orders:{order.user_id}")
+
         return order
